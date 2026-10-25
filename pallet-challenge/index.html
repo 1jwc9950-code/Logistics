@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0f141c">
+<title>파레트 챌린지</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:#0f141c;color:#fff;font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;touch-action:manipulation;user-select:none}
+#cvs{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;left:0;right:0;top:0;padding:calc(env(safe-area-inset-top) + 10px) 16px 0;display:flex;flex-direction:column;gap:6px;pointer-events:none;text-shadow:0 2px 4px #000}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:22px;font-weight:800}
+#wage{font-size:34px;color:#ffd166;font-weight:900}
+#hp{font-size:22px;letter-spacing:3px}
+#sub{font-size:17px;opacity:.9;font-weight:700}
+#bubble{position:fixed;left:50%;bottom:50%;transform:translateX(-50%) scale(.9);transform-origin:center bottom;opacity:0;transition:.2s;background:#fff;color:#111;padding:12px 16px;border-radius:14px;font-weight:900;font-size:18px;line-height:1.4;text-align:center;width:max-content;max-width:62vw;word-break:keep-all;pointer-events:none;box-shadow:0 6px 16px rgba(0,0,0,.45)}
+#bubble.on{opacity:1;transform:translateX(-50%) scale(1)}
+#quit{position:fixed;right:14px;bottom:calc(env(safe-area-inset-bottom) + 14px);z-index:5;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.35);background:rgba(20,26,36,.75);color:#fff;font-size:15px;font-weight:700}
+#quit.hide{display:none}
+#flash{position:fixed;inset:0;background:#ff3b3b;opacity:0;transition:opacity .2s;pointer-events:none}
+#ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,8,12,.84);padding:16px}
+#ov.hide{display:none}
+#ov .card{width:100%;max-width:360px;max-height:94vh;display:flex;flex-direction:column;background:#1a2230;border-radius:18px;padding:20px 18px 18px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+#ov h1{font-size:24px;margin-bottom:10px}
+#ov p{font-size:15px;line-height:1.5;opacity:.95;margin-bottom:10px}
+#ov .how{flex:0 1 auto;overflow-y:auto;text-align:center;font-size:15px;line-height:1.5;background:#141b27;border-radius:12px;padding:10px 12px;list-style:none}
+#ov .how li{margin-bottom:8px}
+#ov .st{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #2c3950;font-size:15px}
+#ov b{color:#ffd166}
+#ov button{flex:0 0 auto;margin-top:12px;width:100%;padding:14px;border:0;border-radius:12px;background:#ffb020;color:#111;font-size:18px;font-weight:800}
+</style>
+</head>
+<body>
+<canvas id="cvs"></canvas>
+<div id="hud">
+ <div class="row"><span id="trk">📦 1 / 6 파레트</span><span id="cnt">0 / 45</span></div>
+ <div class="row"><span id="wage">0원</span><span id="hp"></span></div>
+ <div id="sub"></div>
+</div>
+<div id="bubble"></div>
+<button id="quit">🏃 중도 도망</button>
+<div id="flash"></div>
+<div id="ov"></div>
+<script type="text/plain" id="game">
+/* ===== 상수 ===== */
+const $=id=>document.getElementById(id);
+const BELT_Y=.95,BELT_Z=3.4,PAL_TOP=.22,BOX=1,BH=.6,CELL=1.05,LAYERS=5,CAP=45,GAP=1.35;
+const BASE=1.0,MULT=[1.6,1.8,2.0,2.2,2.4,2.6],PALLETS=6;
+const SPAWN_X=7.4,END_X=-7.4,PG_Z=-.4,MANAGER_X=-5,MANAGER_OUT=-8.5,MANAGER_Z=.6;
+const LINES=['이 양반아, 속도 올려!','손이 보인다!','빨리빨리!','아이씨! 빨리해 장난해?','상자 똑바로 안놔? 장난해 지금?','실수하면 블랙이야','사원님 더 빨리해주세요','왜 이렇게 답답해'];
+const ease=k=>k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;
+
+/* ===== 상태 ===== */
+let P=null,truck=null,belt=[],anims=[],tweens=[];
+let strikes=0,wage=0,palletNo=1,spawnAcc=GAP,mgrT=0,visiting=false;
+let running=false,over=false,busy=false,shake=0,lastT=performance.now();
+const DUMMY={x:0};
+$('quit').addEventListener('click',quitGame);
+const mult=()=>MULT[Math.min(palletNo,PALLETS)-1];
+const spd=()=>BASE*mult();
+
+/* ===== 렌더러와 카메라 ===== */
+const cvs=$('cvs');
+const R=new THREE.WebGLRenderer({canvas:cvs,antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));
+R.shadowMap.enabled=true;R.shadowMap.type=THREE.PCFSoftShadowMap;
+R.toneMapping=THREE.ACESFilmicToneMapping;R.toneMappingExposure=1.1;
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0f141c);
+scene.fog=new THREE.Fog(0x0f141c,40,95);
+const cam=new THREE.PerspectiveCamera(42,1,.1,200);
+
+/* ===== 조명 ===== */
+scene.add(new THREE.HemisphereLight(0xdfe8ff,0x3b3429,.85));
+const sun=new THREE.DirectionalLight(0xfff4e0,1.2);
+sun.position.set(-4,11,7);sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024);
+Object.assign(sun.shadow.camera,{left:-11,right:11,top:9,bottom:-9,near:1,far:30});
+sun.shadow.camera.updateProjectionMatrix();
+scene.add(sun);
+for(const x of[-6,6]){
+ const l=new THREE.SpotLight(0xfff0d0,80,26,.6,.5,1.5);
+ l.position.set(x,7.6,1);l.target.position.set(x,0,0);
+ scene.add(l);scene.add(l.target);
+}
+
+/* ===== 재질과 텍스처 ===== */
+const mat=(c,r=.8,m=0)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m});
+function box(w,h,d,m,x,y,z){
+ const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+ o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;return o;
+}
+function canvasTex(w,h,draw,rep){
+ const c=document.createElement('canvas');c.width=w;c.height=h;
+ draw(c.getContext('2d'),w,h);
+ const t=new THREE.CanvasTexture(c);
+ t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(rep[0],rep[1]);return t;
+}
+const TEX=canvasTex(128,128,(g,w,h)=>{ /* 골판지 상자 */
+ g.fillStyle='#c9925a';g.fillRect(0,0,w,h);
+ g.fillStyle='#d8a86e';g.fillRect(0,0,w,10);g.fillRect(0,h-10,w,10);
+ g.fillStyle='#b98048';g.fillRect(54,0,20,h);
+ g.fillStyle='rgba(255,255,255,.35)';g.fillRect(56,0,4,h);
+ g.fillStyle='rgba(60,30,10,.22)';for(let i=0;i<8;i++)g.fillRect(0,i*16+4,w,1);
+ g.fillStyle='rgba(30,30,30,.7)';g.fillRect(14,70,32,12);g.fillRect(84,30,22,8);
+},[1,1]);
+const BOXGEO=new THREE.BoxGeometry(BOX,BH,BOX);
+const boxMat=new THREE.MeshStandardMaterial({map:TEX,roughness:.85});
+function makeBox(){
+ const m=new THREE.Mesh(BOXGEO,boxMat);
+ m.castShadow=true;m.receiveShadow=true;return m;
+}
+const woodMat=mat(0xa57a48,.9);
+const floorTex=canvasTex(256,256,(g,w,h)=>{ /* 콘크리트 바닥 */
+ g.fillStyle='#596170';g.fillRect(0,0,w,h);
+ for(let i=0;i<500;i++){g.fillStyle='rgba(255,255,255,'+(Math.random()*.05)+')';g.fillRect(Math.random()*w,Math.random()*h,2,2);}
+ g.strokeStyle='#4a515d';g.lineWidth=3;g.strokeRect(0,0,w,h);
+},[6,3]);
+const signTex=canvasTex(512,128,(g,w,h)=>{ /* 벽 안내판 */
+ g.fillStyle='#1d2a3a';g.fillRect(0,0,w,h);
+ g.fillStyle='#ffb020';g.fillRect(0,0,w,16);g.fillRect(0,h-16,w,16);
+ g.fillStyle='#ffffff';g.font='bold 60px sans-serif';g.textAlign='center';g.textBaseline='middle';
+ g.fillText('상·하차 A구역',w/2,h/2+4);
+},[1,1]);
+
+/* ===== 창고 배경 ===== */
+scene.add(box(30,.2,11.5,new THREE.MeshStandardMaterial({map:floorTex,roughness:.95}),0,-.1,-1.45));
+for(const z of[-2.2,2.0])scene.add(box(30,.02,.12,mat(0xf5c400,.6),0,.01,z));
+scene.add(box(30,7.5,.3,mat(0x3a4656,.9),0,3.75,-7.2));
+scene.add(box(30,.4,.4,mat(0x9aa4b2,.4,.6),0,6.6,-6.4));
+scene.add(box(6.5,1.5,.12,new THREE.MeshStandardMaterial({map:signTex,roughness:.6}),0,5.0,-7.0));
+for(const x of[-9,9])scene.add(box(.5,7.5,.5,mat(0x6b7685,.6,.4),x,3.75,-2.5));
+for(const x of[-9,9])scene.add(box(.56,.25,.56,mat(0xffb020,.5),x,2.2,-2.5));
+for(const x of[-6,-2,2,6])scene.add(box(2.4,.08,.7,new THREE.MeshBasicMaterial({color:0xfff3d6}),x,6.35,-3.2));
+const rackMat=mat(0xe8702a,.6,.25),beamMat=mat(0x2b6bd6,.5,.3);
+function rack(x,z){
+ const g=new THREE.Group();
+ for(const dx of[-1.5,1.5])for(const dz of[-.5,.5])g.add(box(.12,3.4,.12,rackMat,dx,1.7,dz));
+ for(let s=0;s<3;s++){
+  const y=.7+s*1.0;
+  g.add(box(3,.09,1.1,beamMat,0,y,0));
+  for(let k=-1;k<=1;k++){
+   if(Math.random()<.85){
+    const b=makeBox();
+    b.position.set(k*1.02,y+.3,(Math.random()-.5)*.2);
+    b.rotation.y=(Math.random()-.5)*.1;g.add(b);
+   }
+  }
+ }
+ g.position.set(x,0,z);scene.add(g);
+}
+for(const x of[-11,-6.5,6.5,11])rack(x,-6.4);
+/* 빈 파레트 쌓아둔 곳 */
+for(let k=0;k<4;k++)scene.add(box(3.2,.2,3.2,woodMat,9.5,.1+k*.22,-1.5));
+for(let k=0;k<2;k++)scene.add(box(3.2,.2,3.2,woodMat,-9.5,.1+k*.22,-1.5));
+/* 안전 콘 */
+for(const x of[-8.2,8.2])scene.add(new THREE.Mesh(new THREE.CylinderGeometry(.04,.26,.6,12),mat(0xff6a1a,.6)));
+
+/* ===== 컨베이어 벨트 ===== */
+const beltTex=canvasTex(64,64,(g,w,h)=>{
+ g.fillStyle='#2d3239';g.fillRect(0,0,w,h);
+ g.fillStyle='#e0b020';g.fillRect(0,0,6,h);
+ g.fillStyle='#4a515c';g.fillRect(6,0,20,h);
+},[5,1]);
+scene.add(box(17,.22,1.9,mat(0x20262e,.7,.4),0,BELT_Y-.25,BELT_Z));
+scene.add(box(17,.06,1.5,new THREE.MeshStandardMaterial({map:beltTex,roughness:.8}),0,BELT_Y-.03,BELT_Z));
+for(const x of[-8,-4,0,4,8])scene.add(box(.14,BELT_Y-.36,.14,mat(0xffb020,.5,.4),x,(BELT_Y-.36)/2,BELT_Z));
+for(const z of[-.8,.8])scene.add(box(17,.12,.06,mat(0xffb020,.5,.4),0,BELT_Y+.06,BELT_Z+z));
+
+/* ===== 관리자 (화난 얼굴) ===== */
+const manager=new THREE.Group();
+manager.add(box(.6,1.1,.42,mat(0x2a6fd6,.7),0,.95,0));
+manager.add(box(.5,.12,.46,mat(0x222831,.6),0,.4,0));
+manager.add(box(.4,.4,.4,mat(0xe7b58c,.7),0,1.7,0));
+manager.add(box(.36,.07,.05,mat(0x1a1a1a,.5),-.09,1.84,.21));
+manager.add(box(.36,.07,.05,mat(0x1a1a1a,.5),.09,1.84,.21));
+manager.add(box(.46,.12,.46,mat(0xffd21f,.5),0,1.98,0));
+manager.scale.set(1.3,1.3,1.3);
+manager.position.set(MANAGER_OUT,0,MANAGER_Z);scene.add(manager);
+
+/* ===== 파레트와 트럭 ===== */
+function newPallet(){
+ const g=new THREE.Group();
+ for(const x of[-1.3,0,1.3])g.add(box(.3,.12,3.4,woodMat,x,.12,0));
+ g.add(box(3.4,.06,3.4,woodMat,0,.19,0));
+ g.position.set(0,0,PG_Z);
+ scene.add(g);
+ return{g,cells:[[[],[],[]],[[],[],[]],[[],[],[]]],count:0};
+}
+const truckMat=mat(0xe9ecef,.6,.1),cabMat=mat(0x1f6fd0,.5,.2),tireMat=mat(0x161a20,.9);
+function makeTruck(){
+ const g=new THREE.Group();
+ g.add(box(3.6,3.9,3.4,truckMat,1.0,2.15,0));
+ g.add(box(1.7,2.1,3.2,cabMat,-2.6,1.3,0));
+ g.add(box(3.6,.3,3.4,mat(0x333a44,.8),1.0,.25,0));
+ for(const x of[-2.6,.2,1.9])for(const z of[-1.5,1.5])g.add(box(.7,.7,.3,tireMat,x,.35,z));
+ return g;
+}
+
+/* ===== 헬퍼 ===== */
+function say(msg,ms=2000){
+ const b=$('bubble');b.textContent=msg;b.classList.add('on');
+ clearTimeout(say.t);say.t=setTimeout(()=>b.classList.remove('on'),ms);
+}
+function flash(){
+ $('flash').style.opacity=.35;
+ setTimeout(()=>{$('flash').style.opacity=0;},200);
+}
+function showOv(html){const o=$('ov');o.innerHTML='<div class="card">'+html+'</div>';o.classList.remove('hide');}
+function hideOv(){$('ov').classList.add('hide');}
+function tween(o,a,b,dur,done){tweens.push({o,a,b,dur,t:0,done});}
+function wait(sec,done){DUMMY.x=0;tween(DUMMY,0,0,sec,done);}
+
+/* ===== 관리자 등장: 3초마다 걸어와서 잔소리 ===== */
+function visitManager(){
+ if(visiting||!running)return;
+ visiting=true;
+ const line=LINES[Math.floor(Math.random()*LINES.length)];
+ tween(manager.position,MANAGER_OUT,MANAGER_X,.6,()=>{
+  say(line,2200);
+  wait(1.5,()=>{
+   tween(manager.position,MANAGER_X,MANAGER_OUT,.6,()=>{visiting=false;});
+  });
+ });
+}
+
+/* ===== 택배 ===== */
+function spawnItem(){
+ const m=makeBox();
+ m.position.set(SPAWN_X,BELT_Y+.04+BH/2,BELT_Z);
+ m.rotation.y=(Math.random()-.5)*.15;
+ scene.add(m);
+ belt.push({m,x:SPAWN_X});
+}
+/* 택배를 누르면 가장 낮은 층의 빈 칸에 자동으로 올라감 */
+function placeItem(it){
+ let best=null;
+ for(let i=0;i<3;i++)for(let j=0;j<3;j++){
+  const L=P.cells[i][j].length;
+  if(L<LAYERS&&(!best||L<best.L))best={i,j,L};
+ }
+ if(!best)return;
+ belt.splice(belt.indexOf(it),1);
+ const m=it.m;
+ const before=m.position.clone();
+ P.g.attach(m);
+ const from=P.g.worldToLocal(before);
+ const to=new THREE.Vector3((best.i-1)*CELL,PAL_TOP+BH/2+best.L*BH,(best.j-1)*CELL);
+ anims.push({m,from,to,t:0});
+ P.cells[best.i][best.j].push(m);
+ P.count++;
+ if(P.count>=CAP)fullTruck();
+}
+/* 파레트가 다 차면 트럭이 와서 싣고 떠남 */
+function fullTruck(){
+ busy=true;
+ const old=P;P=null;
+ truck=makeTruck();truck.position.set(-16,0,PG_Z);scene.add(truck);
+ say('🚚 '+palletNo+'번 파레트 출고!',1600);
+ tween(truck.position,-16,-4.4,1.4,()=>{
+  tween(old.g.position,0,-3.4,.9,()=>{
+   tween(truck.position,-4.4,-22,1.8);
+   tween(old.g.position,-3.4,-21,1.8,()=>{
+    scene.remove(old.g);scene.remove(truck);truck=null;
+    if(palletNo>=PALLETS){finish();return;}
+    palletNo++;
+    P=newPallet();P.g.position.x=12;
+    tween(P.g.position,12,0,1.0,()=>{busy=false;});
+   });
+  });
+ });
+}
+/* 실수: 3번이면 패배 */
+function miss(){
+ strikes++;flash();shake=.3;
+ if(strikes>=3){
+  running=false;
+  say('이 양반아 집에가!',2600);
+  wait(1.8,defeat);
+  return;
+ }
+ say('실수하면 블랙이야!');
+}
+function bestOf(w){
+ let best=0;
+ try{best=+localStorage.getItem('pallet_best')||0;}catch(e){}
+ if(w>best){best=w;try{localStorage.setItem('pallet_best',String(w));}catch(e){}}
+ return best;
+}
+function endUI(){$('quit').classList.add('hide');}
+function quitGame(){
+ if(!running)return;
+ running=false;over=true;endUI();
+ showOv(`<h1>🏃 중도 도망</h1>
+ <p>근무 도중 도망쳤어요.<br>오늘 시급은 지급되지 않아요.</p>
+ <button onclick="startGame()">다시 시작하기</button>`);
+}
+function defeat(){
+ if(over)return;over=true;endUI();
+ showOv(`<h1>이 양반아 집에가</h1>
+ <p>실수 3번! 오늘은 시급을 받지 못했어요.</p>
+ <button onclick="startGame()">다시 시작하기</button>`);
+}
+function finish(){
+ running=false;over=true;endUI();
+ const w=Math.floor(wage);const best=bestOf(w);
+ showOv(`<h1>🎉 퇴근!</h1>
+ <p>파레트 ${PALLETS}개 출고 완료! 수고했어요.</p>
+ <div class="st"><span>지급된 시급</span><b>${w.toLocaleString()}원</b></div>
+ <div class="st"><span>최고 기록</span><b>${best.toLocaleString()}원</b></div>
+ <button onclick="startGame()">다시 시작하기</button>`);
+}
+function startGame(){
+ for(const it of belt)scene.remove(it.m);
+ belt=[];anims=[];tweens=[];
+ if(P)scene.remove(P.g);
+ if(truck){scene.remove(truck);truck=null;}
+ P=newPallet();
+ strikes=0;wage=0;palletNo=1;spawnAcc=GAP;mgrT=0;visiting=false;
+ manager.position.x=MANAGER_OUT;
+ busy=false;running=true;over=false;
+ hideOv();
+ $('quit').classList.remove('hide');
+ say('첫 파레트 시작! 택배를 누르세요',2000);
+}
+
+/* ===== 입력 ===== */
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();
+cvs.addEventListener('pointerup',e=>{
+ if(!running||busy||!P)return;
+ const r=cvs.getBoundingClientRect();
+ ndc.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);
+ ray.setFromCamera(ndc,cam);
+ const hit=ray.intersectObjects(belt.map(b=>b.m),false)[0];
+ if(!hit)return;
+ const it=belt.find(b=>b.m===hit.object);
+ if(it)placeItem(it);
+});
+
+/* ===== HUD ===== */
+function updateHUD(){
+ $('trk').textContent='📦 '+palletNo+' / '+PALLETS+' 파레트';
+ $('cnt').textContent=(P?P.count:0)+' / '+CAP;
+ $('wage').textContent=Math.floor(wage).toLocaleString()+'원';
+ $('hp').textContent='❤'.repeat(3-strikes)+'🖤'.repeat(strikes);
+ $('sub').textContent='벨트 '+mult().toFixed(1)+'배속 · 시급 초당 1원';
+}
+
+/* ===== 프레임 루프 ===== */
+function loop(now){
+ const dt=Math.min(.05,(now-lastT)/1000);lastT=now;
+ const s=spd();
+ if(running){
+  wage+=dt;
+  mgrT+=dt;if(mgrT>=3){mgrT=0;visitManager();}
+  if(!busy){
+   beltTex.offset.x=(beltTex.offset.x+s*dt*.35)%1;
+   for(const it of belt){it.x-=s*dt;it.m.position.x=it.x;}
+   spawnAcc+=s*dt;
+   if(spawnAcc>=GAP){spawnAcc-=GAP;spawnItem();}
+   for(let i=belt.length-1;i>=0;i--){
+    const it=belt[i];
+    if(it.x<END_X){scene.remove(it.m);belt.splice(i,1);miss();if(!running)break;}
+   }
+  }
+ }
+ for(let i=anims.length-1;i>=0;i--){
+  const a=anims[i];a.t+=dt;
+  const k=Math.min(1,a.t/.3);
+  a.m.position.lerpVectors(a.from,a.to,ease(k));
+  a.m.position.y+=Math.sin(k*Math.PI)*.9;
+  if(k>=1)anims.splice(i,1);
+ }
+ for(let i=tweens.length-1;i>=0;i--){
+  const w=tweens[i];w.t+=dt;
+  const k=Math.min(1,w.t/w.dur);
+  w.o.x=w.a+(w.b-w.a)*ease(k);
+  if(k>=1){tweens.splice(i,1);if(w.done)w.done();}
+ }
+ manager.position.y=visiting&&manager.position.x!==MANAGER_OUT?Math.abs(Math.sin(now*.012))*.08:0;
+ manager.rotation.y=visiting?.35:Math.sin(now*.002)*.2;
+ if(shake>0){shake-=dt;cam.position.x=(Math.random()-.5)*shake*.5;}else cam.position.x=0;
+ R.render(scene,cam);
+ updateHUD();
+ requestAnimationFrame(loop);
+}
+/* 화면 비율에 맞춰 카메라 거리 조절: 좁은 화면은 가깝게(크게), 넓은 화면은 기본 거리 */
+function resize(){
+ const w=innerWidth,h=innerHeight,asp=w/h;
+ R.setSize(w,h,false);
+ cam.aspect=asp;cam.fov=asp<.75?58:42;
+ const half=Math.tan(cam.fov*Math.PI/360);
+ /* 벨트 좌우 끝(±5.4)이 화면에 들어오도록 거리 조절 */
+ const need=Math.max(1,(5.4/(asp*half))/7.6);
+ const T=new THREE.Vector3(0,2.0,.6);
+ cam.position.set(T.x,T.y+1.2*need,T.z+7.6*need);
+ cam.lookAt(T);
+ cam.updateProjectionMatrix();
+  /* 말풍선: 벨트 바로 위, 가운데 정렬 */
+ const bp=new THREE.Vector3(0,BELT_Y+.1,BELT_Z-.5).project(cam);
+ const by=(1-bp.y)/2*h;
+ $('bubble').style.bottom=(h-by+14)+'px';
+}
+window.addEventListener('resize',resize);
+resize();
+showOv(`<h1>📦 파레트 챌린지</h1>
+ <ul class="how">
+  <li><b>목표</b>: 파레트 ${PALLETS}개 출고하면 퇴근!</li>
+  <li><b>시급</b>: 1초에 1원</li>
+  <li><b>조작</b>: 박스를 누르면 파레트에 자동으로 쌓여요</li>
+  <li><b>파레트</b>: 박스가 5층까지 쌓이면 트럭이 싣고 떠나요</li>
+  <li><b>속도</b>: 파레트마다 0.2배씩 빨라져요 (1.6배 → 2.6배)</li>
+  <li><b>실수</b>: 벨트 끝으로 놓치면 1번, 3번이면 패배</li>
+  <li><b>중도 도망</b>: 중간에 그만두는 버튼 (시급 없음)</li>
+ </ul>
+  <button onclick="startGame()">상하차 알바 시작하기</button>`);
+requestAnimationFrame(loop);
+</script>
+<script type="module">
+/* three.js 모듈 버전을 여러 CDN에서 순서대로 불러온 뒤 게임 실행 */
+const SRC=[
+ 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',
+ 'https://unpkg.com/three@0.160.0/build/three.module.js'
+];
+function fail(){
+ document.body.innerHTML='<div style="padding:24px;font:16px sans-serif;color:#fff;background:#111;height:100vh">3D 라이브러리를 불러오지 못했습니다.<br>인터넷 연결 또는 광고 차단 설정을 확인한 뒤 새로고침해 주세요.</div>';
+}
+function boot(){
+ const s=document.createElement('script');
+ s.textContent=document.getElementById('game').textContent;
+ document.body.appendChild(s);
+}
+(async()=>{
+ for(const u of SRC){
+  try{window.THREE=await import(u);boot();return;}catch(e){}
+ }
+ fail();
+})();
+</script>
+</body>
+</html>
