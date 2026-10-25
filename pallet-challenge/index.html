@@ -218,11 +218,53 @@ function visitManager(){
  visiting=true;
  const line=LINES[Math.floor(Math.random()*LINES.length)];
  tween(manager.position,MANAGER_OUT,MANAGER_X,.6,()=>{
-  say(line,2200);
+  say(line,2200);speak(line);
   wait(1.5,()=>{
    tween(manager.position,MANAGER_X,MANAGER_OUT,.6,()=>{visiting=false;});
   });
  });
+}
+
+/* ===== 소리 ===== */
+let actx=null;
+function audio(){ /* 사용자가 누른 뒤에만 소리를 켤 수 있음 */
+ try{
+  if(!actx)actx=new (window.AudioContext||window.webkitAudioContext)();
+  if(actx.state==='suspended')actx.resume();
+ }catch(e){}
+}
+/* 상자 내려놓는 소리: 짧은 저음 + 나무 울림 */
+function thud(){
+ if(!actx)return;
+ try{
+  const t=actx.currentTime,len=.14,n=Math.floor(actx.sampleRate*len);
+  const buf=actx.createBuffer(1,n,actx.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/n,3);
+  const src=actx.createBufferSource();src.buffer=buf;
+  const lp=actx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=900;
+  const g=actx.createGain();g.gain.setValueAtTime(.7,t);g.gain.exponentialRampToValueAtTime(.001,t+len);
+  src.connect(lp);lp.connect(g);g.connect(actx.destination);src.start(t);
+  const o=actx.createOscillator(),og=actx.createGain();
+  o.type='sine';o.frequency.setValueAtTime(150,t);o.frequency.exponentialRampToValueAtTime(55,t+.12);
+  og.gain.setValueAtTime(.8,t);og.gain.exponentialRampToValueAtTime(.001,t+.14);
+  o.connect(og);og.connect(actx.destination);o.start(t);o.stop(t+.15);
+ }catch(e){}
+}
+/* 관리자 목소리: 한국어 음성, 낮고 빠르게 해서 화난 말투 */
+function speak(text){
+ try{
+  if(!('speechSynthesis' in window))return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang='ko-KR';u.pitch=.75;u.rate=1.25;u.volume=1;
+  const ko=speechSynthesis.getVoices().filter(x=>x.lang&&x.lang.indexOf('ko')===0);
+  /* 남성 음성 우선 선택 (이름에 남성을 뜻하는 단어가 있는 음성) */
+  const male=ko.find(x=>/injoon|hyunsu|minsu|male|남|준|현수/i.test(x.name));
+  const v=male||ko[0];
+  if(v)u.voice=v;
+  if(!male){u.pitch=.6;}
+  speechSynthesis.speak(u);
+ }catch(e){}
 }
 
 /* ===== 택배 ===== */
@@ -250,6 +292,7 @@ function placeItem(it){
  anims.push({m,from,to,t:0});
  P.cells[best.i][best.j].push(m);
  P.count++;
+ thud();
  if(P.count>=CAP)fullTruck();
 }
 /* 파레트가 다 차면 트럭이 와서 싣고 떠남 */
@@ -276,11 +319,11 @@ function miss(){
  strikes++;flash();shake=.3;
  if(strikes>=3){
   running=false;
-  say('이 양반아 집에가!',2600);
+  say('이 양반아 집에가!',2600);speak('이 양반아 집에가!');
   wait(1.8,defeat);
   return;
  }
- say('실수하면 블랙이야!');
+ say('실수하면 블랙이야!');speak('실수하면 블랙이야!');
 }
 function bestOf(w){
  let best=0;
@@ -321,6 +364,7 @@ function startGame(){
  manager.position.x=MANAGER_OUT;
  busy=false;running=true;over=false;
  hideOv();
+ audio();
  $('quit').classList.remove('hide');
  say('첫 파레트 시작! 택배를 누르세요',2000);
 }
